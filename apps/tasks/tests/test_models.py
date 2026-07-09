@@ -20,6 +20,16 @@ def another_user():
     )
 
 @pytest.fixture
+def admin_user():
+    admin = User.objects.create_user(
+        username="admin",
+        password="12345678"
+    )
+    admin.profile.role = "admin"
+    admin.profile.save()
+    return admin
+
+@pytest.fixture
 def task(user):
     return Task.objects.create(
         user=user,
@@ -177,7 +187,7 @@ class TestTaskUpdateView:
         api_client.force_authenticate(user=another_user)
         payload = {'description': 'Hacked!'}
         response = api_client.put(f'/api/tasks/{task.id}/', payload)
-        assert response.status_code == 404
+        assert response.status_code == 403
 
     def test_partial_update_task(self, api_client, user, task):
         api_client.force_authenticate(user=user)
@@ -205,5 +215,33 @@ class TestTaskDeleteView:
     def test_delete_task_forbidden_different_user(self, api_client, another_user, task):
         api_client.force_authenticate(user=another_user)
         response = api_client.delete(f'/api/tasks/{task.id}/')
-        assert response.status_code == 404
+        assert response.status_code == 403
         assert Task.objects.filter(id=task.id).exists()
+
+
+@pytest.mark.django_db
+class TestTaskRoleBasedAccess:
+    def test_admin_can_list_other_users_tasks(self, api_client, admin_user, task):
+        api_client.force_authenticate(user=admin_user)
+        response = api_client.get('/api/tasks/')
+        assert response.status_code == 200
+        assert any(t['id'] == task.id for t in response.data)
+
+    def test_regular_user_cannot_see_other_users_tasks(self, api_client, another_user, task):
+        api_client.force_authenticate(user=another_user)
+        response = api_client.get('/api/tasks/')
+        assert response.status_code == 200
+        assert all(t['id'] != task.id for t in response.data)
+
+    def test_admin_can_update_other_users_task(self, api_client, admin_user, task):
+        api_client.force_authenticate(user=admin_user)
+        response = api_client.patch(f'/api/tasks/{task.id}/', {'description': 'Updated by admin'})
+        assert response.status_code == 200
+        task.refresh_from_db()
+        assert task.description == 'Updated by admin'
+
+    def test_admin_can_delete_other_users_task(self, api_client, admin_user, task):
+        api_client.force_authenticate(user=admin_user)
+        response = api_client.delete(f'/api/tasks/{task.id}/')
+        assert response.status_code == 204
+        assert not Task.objects.filter(id=task.id).exists()
